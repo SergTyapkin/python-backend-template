@@ -1,0 +1,21 @@
+# Правила проекта
+
+- Это чистый инфраструктурный шаблон. Бизнес-примеры допустимы только в документации и тестах.
+- FastAPI routers отвечают за HTTP; services — за операции и объектные права; DTO — Pydantic 2.
+- Python/SQL используют snake_case, публичный JSON — camelCase через `Schema`.
+- Добавляйте модули явно в `api/router.py`, ORM imports — в `db/base.py:load_models`.
+- Используйте SQLAlchemy 2 AsyncSession, отдельную на запрос. SQL только параметризованный.
+- Используйте `Session` dependency с function scope: commit должен завершиться до отправки ответа.
+- Не вызывайте commit в audit/services. Аудит и изменение данных принадлежат одной транзакции.
+- Схема БД меняется только Alembic migrations. Ревью autogenerate обязательно.
+- PATCH использует exclude_unset=True; PUT не добавлять. Явный null проверяется DTO/сервисом.
+- Публичные Read DTO не должны включать секреты; ORM напрямую не возвращать.
+- Bearer access tokens проверяются через доверенные issuer/audience/JWKS; локального login нет.
+- Отсутствие SSO никогда не разрешает доступ. Проверяйте permissions и ownership отдельно.
+- Зависимости ресурсов создаются lifespan, передаются через Depends; shared session запрещена.
+- Внешние HTTP clients переиспользуются и имеют timeout. Не блокируйте event loop.
+- Не логируйте тела, токены, cookies, query strings и персональные данные.
+- Подключайте audit явно: allowlist изменённых несекретных полей, bounded JSONB.
+- Добавляйте unit и PostgreSQL integration tests; SQLite не подменяет PostgreSQL.
+- После изменений: Ruff, Pyright, pytest, Alembic check, экспорт и валидация OpenAPI.
+- Не добавляйте deployment или внешние системы без необходимости. Не выполняйте git push без запроса.

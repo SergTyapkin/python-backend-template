@@ -1,0 +1,9 @@
+# Python drivers select staged files and construct argv portably; Git provides hook shell.
+pre-commit:
+  scripts:
+    "check.py":
+      runner: uv run --locked python
+pre-push:
+  scripts:
+    "check.py":
+      runner: uv run --locked python
