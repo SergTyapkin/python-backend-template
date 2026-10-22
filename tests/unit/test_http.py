@@ -15,12 +15,13 @@ from myapp.core.exceptions import AppError
 
 async def test_infrastructure_only(client):
     assert (await client.get("/health/live")).json() == {"status": "ok"}
-    assert (await client.get("/version")).json()["gitSha"] == "unknown"
+    assert (await client.get("/version")).json()["git_sha"] == "unknown"
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert (await client.get(path)).status_code == 200
     contract = (await client.get("/openapi.json")).json()
     validate(contract)
-    assert set(contract["paths"]) == {"/health/live", "/health/ready", "/version"}
+    assert {"/health/live", "/health/ready", "/version", "/api/v1/tasks"} <= set(contract["paths"])
+    assert "delete" not in contract["paths"]["/api/v1/tasks/{identifier}"]
     assert all("put" not in operations for operations in contract["paths"].values())
 
 
@@ -35,6 +36,12 @@ def test_only_declared_public_routes(app):
         "/docs",
         "/redoc",
         "/openapi.json",
+        "/api/v1/tasks",
+        "/api/v1/tasks/{identifier}",
+        "/api/v1/auth/register",
+        "/api/v1/auth/login",
+        "/api/v1/auth/me",
+        "/api/v1/auth/logout",
     }
 
 
@@ -60,7 +67,7 @@ async def test_errors(app, client, status):
         "code": "SAFE_ERROR",
         "message": "Safe message",
         "details": None,
-        "requestId": "test-123",
+        "request_id": "test-123",
     }
     assert response.headers["x-request-id"] == "test-123"
 
@@ -78,7 +85,7 @@ async def test_validation_and_unhandled(app, client):
     response = await client.get("/test/crash")
     assert response.status_code == 500
     assert "private-token" not in response.text
-    assert response.json()["requestId"] == response.headers["x-request-id"]
+    assert response.json()["request_id"] == response.headers["x-request-id"]
 
 
 async def test_closed_without_sso(app, client):

@@ -1,57 +1,70 @@
-# Development и проверки
+# Разработка и проверки
 
-`uv sync --locked` воспроизводит зависимости; `uv lock --upgrade` обновляет после ревью.
-Python 3.14 выбран как стабильная версия, совместимая с asyncpg/cryptography и текущим uv.
-Проверяйте поддержку wheels перед сменой minor Python; prerelease не используйте.
+Зависимости: `uv sync --frozen`; обновления — `uv lock --upgrade` с ревью diff/CI.
+Версии Python 3.14 и SQLModel/Pydantic закреплены, фабрика использует публичные API установленной версии.
+Импорт main не создаёт приложение, файлы или соединения: запускайте create_app через --factory.
 
-## Отдельная тестовая БД
+Миграции: `uv run project-migration "message"`, ревью, `uv run alembic upgrade head`,
+`uv run alembic check`. Autogenerate не гарантирует правильное rename/data migration.
+Не запускайте downgrade на рабочей БД. Runtime role без DDL, migration role отдельно в будущем.
+Audit 0001 сохранён, 0002 добавляет app_user/login_session/task без демонстрационных seed данных.
 
-Создайте отдельную пустую PostgreSQL БД `app_test` и её владельца средствами вашей установки.
-Тесты удаляют и создают инфраструктурные таблицы через Alembic; нужен DDL доступ.
-Тестовый URL не должен указывать на рабочую БД. Сuffix `_test` проверяется автоматически.
+## Отдельная PostgreSQL для integration
 
-PowerShell:
+Создайте отдельную БД app_test. Тесты удаляют/пересоздают схему и очищают данные.
+Проверяется суффикс _test, но он не заменяет правильный выбор URL.
 
 ```powershell
 $env:TEST_DATABASE_URL='postgresql+asyncpg://app:app@localhost:5432/app_test'
 uv run pytest tests/integration -q
 ```
 
-Linux/macOS:
-
 ```sh
 TEST_DATABASE_URL=postgresql+asyncpg://app:app@localhost:5432/app_test uv run pytest tests/integration -q
 ```
 
-Без TEST_DATABASE_URL интеграционные тесты явно skipped; unit не требуют БД.
-Для чистой production-like проверки примените upgrade head на новой БД,
-повторите upgrade, затем alembic check. Не применяйте downgrade к данным проекта.
+Без URL integration явно skipped. SQLite не заменяет PostgreSQL. Alembic downgrade/upgrade,
+повторный upgrade и metadata drift проверяются fixture/тестами один раз за прогон.
+Между тестами очищаются audit/task/session/user, engine закрывается в finally.
+Task ownership, total, CSRF, expiry/logout, unique conflict и atomic rollback проверяются через HTTPX.
 
-## Hooks и CI
+## Только pre-commit
 
-`uv run project-init` вызывает `lefthook install`. Повторно: `uv run lefthook install`.
-`uv run lefthook run pre-commit` проверяет staged файлы; форматирование не меняет index.
-Исправление: `uv run ruff check --fix <files>`, `uv run ruff format <files>`, затем git add.
-Конфиги проверяются на синтаксис, final newline и trailing spaces, secrets — по staged bytes.
-Это быстрый detector, не замена Gitleaks/ревью. Pre-push не запускает полный quality gate.
-Новые виды секретов добавляйте в detector и CI policy, реальные значения не коммитьте.
+`uv run project-init` идемпотентно устанавливает pre-commit; старые Lefthook hooks удаляются
+только при обнаружении их маркера. Нет pre-push hook и параллельной второй системы.
+Существующий чужой hook pre-commit не удаляется вручную; pre-commit управляет своей установкой.
+Для ручной проверки: `uv run pre-commit run --all-files` (проверяет индексные версии файлов).
 
-CI не деплоит, имеет contents:read, использует PostgreSQL service и locked uv cache.
-Dependency audit зависит от доступности vulnerability feed. Findings не подавляйте молча:
-обновите пакет либо документируйте ограниченное исключение с причиной и сроком.
-GitHub Actions закреплены SHA; Dependabot обновляет их.
-Gitleaks CLI скачивается из закреплённого release с проверкой SHA256 и не требует лицензии action.
+Первый local hook запускает Ruff check/format параллельно по изменённым Python-файлам,
+на временному снимке index, и лёгкий config/secret check по тем же blobs. Рабочая копия
+не подменяет staged версии; поддержаны пробелы в именах. Configs pyproject.toml/ruff.toml/.ruff.toml
+также берутся из index. Для custom extend с другим именем дополните RUFF_CONFIG_FILES.
+Второй hook всегда запускает все test_resources.py и access tests для генератора/Task;
+при остальных изменениях выполняет полный небольшой unit-suite. pre-commit скрывает
+unstaged изменения на время запуска. Файлы не форматируются автоматически и index не меняется.
+Исправляйте Ruff отдельно и повторно git add. Нет uv sync, сети, integration, type check или AI в hook.
 
-## Production boundaries
+CI: frozen uv sync + cache, Ruff, mypy, unit, независимый PostgreSQL job, migrations/drift,
+env/contract freshness, Python build, pip-audit/Bandit, pinned checksum Gitleaks.
+Права contents:read, PR код не получает production secrets. Dependabot package-ecosystem uv
+поддерживает pyproject.toml и uv.lock; github-actions обновляет закреплённые SHA.
 
-`uv run uvicorn myapp.main:app --host 0.0.0.0 --no-proxy-headers` — процесс API.
-Разрешайте forwarded headers только от явно заданных IP доверенного proxy.
-Отдельный migration step: `uv run alembic upgrade head` с DDL ролью.
-API runtime — без DDL, без superuser. Health доступен без токена; доступность docs можно
-ограничить на внешнем proxy по политике проекта. SSO не является readiness dependency:
-public endpoints продолжают работать, auth failures закрывают protected requests.
+[Поддержка uv в Dependabot](https://docs.astral.sh/uv/guides/integration/dependabot/)
+проверена по официальной документации uv.
 
-Audit cleanup удаляет старые записи порциями; при долгосрочном хранении сначала
-добавьте архивирование и проверьте восстановление. PostgreSQL backup и rollback migration
-требуют проектного плана; downgrade сам по себе не восстанавливает удалённые данные.
-Перед внешним релизом возможен ручной OWASP ZAP scan в изолированном окружении.
+## Измерения и opt-in
+
+```sh
+uv run python scripts/benchmark.py --checks ruff mypy unit integration pool
+uv run python scripts/benchmark.py --checks pre-commit --repeat 3
+uv run python scripts/benchmark.py --checks health --base-url http://localhost:8000 --samples 50
+```
+
+Отчёт .local/benchmark.json включает wall-clock/exit codes и health p50/p95 после прогрева.
+Для integration/pool нужен TEST_DATABASE_URL, для health — запущенный API; иначе явный skip.
+Не сравнивайте разные staged-наборы, холодные/прогретые запуски и параллельную нагрузку.
+Нет speed assertions. Текущие результаты и непроверенные части — docs/validation.md.
+
+AI review выключен: ENABLE_AI_REVIEW=true, AI_REVIEW_MODEL, AI_REVIEW_API_KEY и manual workflow
+включаются владельцем отдельно. Diff уходит провайдеру, результат advisory summary, PR код
+не исполняется с секретом. ZAP — будущий ручной scan изолированного стенда, deployment здесь нет.

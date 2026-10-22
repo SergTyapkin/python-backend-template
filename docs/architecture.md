@@ -1,156 +1,74 @@
-# Архитектура и расширение
+# Архитектура и ограничения
 
-Router занимается HTTP, service — бизнес-операцией, model — схемой БД, DTO — контрактом.
-Repository нужен только для сложного повторяемого доступа к данным.
-В `modules/` нет бизнес-примеров: весь пример ниже существует только в документации.
+`resources/` — небольшой поддерживаемый код шаблона, не сторонний framework.
+ResourceModel наследует SQLModel и использует общую metadata с инфраструктурным audit ORM.
+`api_field` передаёт SQLModel параметры БД, а access хранит в публичном FieldInfo metadata.
+Генератор использует FieldInfo.asdict, create_model и обычные Pydantic defaults/JSON Schema hooks.
+Исходные объявления не изменяются. Defaults Create валидируются; Patch factories очищаются.
 
-## Модель, DTO и PATCH
+Поле без access закрыто. Все generated Read поля сериализуются явным allowlist по column names.
+Отношения и deferred columns не подгружаются через сериализацию. Read service отвергает unloaded поля.
+Нет автоматических вложенных записей, cascade updates, recursive relation serializers или arbitrary SQL.
 
-```python
-from uuid import UUID, uuid4
-from pydantic import Field
-from sqlalchemy.orm import Mapped, mapped_column
-from myapp.db.base import Base
-from myapp.api.responses import Schema
+Resource требует table=True, один UUID primary key id, известные операции и явную policy.
+По умолчанию сортируется id, любая другая сортировка дополняется id. Имена ресурсов/operationId
+выводятся из статического path; не регистрируйте конфликтующие path/operationId в одном приложении.
+Схемы создаются один раз на объявление ресурса, не на запрос. Custom схемы — явный escape hatch.
+Дополнительные ограничения должны усиливать декларацию; неизвестные/противоречащие правила ошибочны.
+Уникальность, FK и конкурентная целостность обеспечиваются БД, не только HTTP-валидацией.
 
+## Policy / service / transactions
 
-class Resource(Base):
-    __tablename__ = "resources"
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    title: Mapped[str] = mapped_column()
-    description: Mapped[str | None] = mapped_column()
+`Policy.authorize` по умолчанию запрещает операции. `scope` также запрещён по умолчанию.
+TaskPolicy задаёт WHERE owner_id=current_user для списка, total и одной строки;
+server_values выставляет owner_id только для Create. Клиентское поле не включено во входные DTO.
+Отсутствующая и чужая строка дают 404. При PATCH/DELETE используется FOR UPDATE.
+Для public ресурса явно передайте public policy и anonymous principal_dependency.
+Для fully custom handler общая operation policy сохраняется, но handler обязан применять scope
+к своим запросам. Дополнительный endpoint добавляйте обычным router, без дублирования стандартного.
 
+Session dependency управляет begin/commit/rollback/close до отправки ответа. Service не commit.
+TaskService переопределяет только create; пример можно заменить обычным Service без перестройки router.
+Проверка итогового PATCH состояния выполняет model_validate на полном наборе колонок;
+трансформирующие validators/сложные правила обновления требуют явного service override.
+Известные integrity conflicts дают 409; SQL и параметры не выводятся клиенту/в лог.
+Audit добавляет только явно публичные поля и изменения, учитывает exclusion/retention/size limit.
 
-class ResourceCreate(Schema):
-    title: str = Field(min_length=1, max_length=200)
-    description: str | None = Field(None, max_length=2000)
+## Производительность и PostgreSQL
 
+ORM objects — стандартный CRUD. Отдельные колонки нужны для измеренных тяжёлых запросов/аналитики.
+Повторные SELECT на элемент списка означают возможный N+1: измерьте round trips и явно выберите
+selectinload/joinedload. Не включайте eager loading автоматически для всех моделей.
+Индекс добавляйте под частый WHERE/JOIN/ORDER BY, проверяя EXPLAIN и при необходимости
+EXPLAIN (ANALYZE, BUFFERS) на представительном объёме. ANALYZE реально исполняет запрос:
+изменения исследуйте в изолированной БД/транзакции с rollback. PRIMARY KEY/UNIQUE уже индексированы.
+Лишние индексы стоят места и замедляют записи. Изменения индексов — отдельные ревью миграций.
 
-class ResourcePatch(Schema):
-    title: str | None = Field(None, min_length=1, max_length=200)
-    description: str | None = Field(None, max_length=2000)
+Offset pagination сохраняет COUNT + LIMIT/OFFSET. При READ COMMITTED возможны разные snapshots;
+строгий snapshot/дорогой COUNT/deep offset решаются в конкретном проекте после измерений.
+Каждый worker имеет свой pool_size + max_overflow: учитывайте суммарный бюджет всех API/jobs.
+Не разделяйте AsyncSession между concurrent tasks и не увеличивайте pool без измерений.
 
+## Границы auth и будущих интеграций
 
-class ResourceRead(Schema):
-    id: UUID
-    title: str
-    description: str | None
-```
+Register/login — отдельные сценарии, User не имеет CRUD router. Пароль добавляется только в
+Credentials поверх generated username schema; UserRead выводится из одной декларации User.
+Пароль Argon2id, session token и CSRF token случайны, в БД хеши. Cookies HttpOnly/Secure/Lax.
+Для cross-site фронтенда SameSite=None требует отдельного явного security design и HTTPS;
+текущий шаблон рассчитан на same-site origins с разными портами/доверенными субдоменами.
+Origin — точный allowlist, CORS credentials без wildcard. CSRF токен привязан к сессии.
+CSRF восстановление после потери in-memory токена пока требует повторного входа.
+Для внешнего SSO сохранены JWT/JWKS dependencies, но account linking/mapping не реализованы.
 
-Добавьте импорт Resource в `load_models`, сгенерируйте и проверьте миграцию.
-Для дат используйте `DateTime(timezone=True)` и Pydantic `AwareDatetime`, UTC.
-UUID/даты сериализуются Pydantic в строки/ISO 8601; nullable — явно через `| None`.
+Email confirmation/reset: одноразовый случайный token, только hash в БД, короткий TTL, отзыв,
+одинаковые ответы при неизвестном email, rate limits и отдельные транзакции/тесты.
+OAuth: state, PKCE, nonce/issuer/audience, allowlist redirect URI, явное безопасное account linking.
+Email provider, платежи, боты, WebSocket подключаются отдельными модулями через Depends/lifespan,
+с timeout, идемпотентностью и fake/MockTransport в тестах. Рабочих интеграций здесь не заявлено.
+CPU/hash работа выполняется в thread pool. Durable tasks, cron, backup, monitoring — внешние процессы;
+встроенного scheduler в API нет. Существующая audit cleanup команда запускается только явно.
 
-```python
-from myapp.core.exceptions import AppError
-from myapp.audit.service import record_audit
-
-
-async def patch_resource(session, settings, resource, payload):
-    values = payload.model_dump(exclude_unset=True)
-    if "title" in values and values["title"] is None:
-        raise AppError(422, "VALIDATION_ERROR", "Title cannot be null")
-    changes = {}
-    for field, value in values.items():
-        before = getattr(resource, field)
-        if before != value:
-            changes[field] = {"before": before, "after": value}
-            setattr(resource, field, value)
-    if changes:
-        await record_audit(
-            session,
-            settings.audit,
-            action="update",
-            entity_type="resource",
-            entity_id=str(resource.id),
-            changes=changes,
-        )
-    await session.flush()
-    return ResourceRead.model_validate(resource)
-```
-
-`Session` из core.dependencies открывает транзакцию с function scope: ошибка commit
-не должна появляться после отправки 200. Весь service, включая audit, использует одну сессию.
-Для отдельной команды используйте `async with session.begin()` явно.
-Для конкурентного изменения используйте row lock или optimistic versioning;
-иначе чтение перед PATCH допускает lost updates. Защищайте уникальность constraints,
-переводите известные IntegrityError в 409 внутри service с корректным rollback/savepoint.
-
-## Router и permissions
-
-```python
-from fastapi import APIRouter, Depends
-from myapp.core.dependencies import Session
-from myapp.auth.dependencies import CurrentPrincipal
-from myapp.api.permissions import require_permissions, require_ownership
-
-router = APIRouter(
-    prefix="/resources", dependencies=[Depends(require_permissions("resource:edit"))]
-)
-
-
-@router.patch("/{resource_id}", response_model=ResourceRead)
-async def update(
-    resource_id: UUID, payload: ResourcePatch, session: Session, principal: CurrentPrincipal
-):
-    # Service loads row with the desired concurrency policy, checks existence/ownership,
-    # then applies patch and audit. Inject Settings through get_settings as well.
-    return await service.update(session, principal, resource_id, payload)
-```
-
-Подключите router явно в api_router. Для read/create/delete заведите отдельные permissions.
-SSO глобальные роли не заменяют resource ownership/tenant checks в service.
-Для multi-tenant данных добавляйте tenant predicate уже в SQL, а не после пагинации.
-
-## Списки и фильтры
-
-Принимайте `Pagination` через query model `Annotated[Pagination, Query()]`.
-Дополнительные фильтры — типизированные DTO конкретного модуля.
-Не передавайте пользовательские строки в SQL как имена колонок:
-
-```python
-statement = select(Resource).where(Resource.title.ilike(bound_pattern))
-statement = sorted_statement(statement, sort, {"title": Resource.title, "id": Resource.id})
-statement = statement.order_by(Resource.id)
-page = await paginate(session, statement, pagination, ResourceRead)
-```
-
-COUNT и page query могут видеть разные snapshots при конкурентных записях (READ COMMITTED).
-Для строгого snapshot используйте подходящий isolation level. JOIN с дублями требует
-правильного distinct/grouping до передачи statement в paginate.
-
-## Внешний сервис (только пример документации)
-
-```python
-class DeliveryClient:
-    def __init__(self, http: httpx.AsyncClient):
-        self.http = http
-
-    async def send(self, payload):
-        try:
-            response = await self.http.post("/messages", json=payload, timeout=5)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise AppError(503, "DELIVERY_UNAVAILABLE", "Delivery unavailable") from exc
-```
-
-В lifespan создайте AsyncClient(base_url=..., timeout=5), сохраните клиент в app.state
-и закройте при shutdown. Dependency возвращает его service через Depends.
-В тесте передайте MockTransport или fake; не обращайтесь к реальному провайдеру.
-Не повторяйте state-changing запросы без idempotency key. Секреты — SecretStr/env,
-ответ провайдера и exception message не попадают в публичную ошибку/лог.
-
-## Периодическая задача
-
-Добавьте `async def` в jobs/, зарегистрируйте явную команду в jobs/cli.py.
-Команда создаёт/закрывает ресурсы сама, использует короткие транзакции и ограниченные batches.
-Внешний scheduler запускает `uv run project-job <name>`. Для singleton jobs применяйте
-DB advisory lock либо гарантию scheduler; для audit cleanup используется SKIP LOCKED.
-BackgroundTasks подходит только для коротких best-effort действий; durable delivery требует
-отдельной очереди/outbox. Retention audit-cleanup согласуйте с требованиями хранения проекта.
-
-## Проверка новой сущности
-
-Тесты должны покрывать DTO/null/aliases, permissions/ownership/tenant isolation,
-успешный CRUD, conflict, transaction rollback вместе с audit, pagination/filter/sort.
-Завершите `alembic check`, экспортом/валидацией OpenAPI и обновлением frontend types.
+Использованные публичные API: [SQLModel](https://sqlmodel.tiangolo.com/tutorial/),
+[Pydantic dynamic models](https://docs.pydantic.dev/latest/examples/dynamic_models/),
+[Argon2 PasswordHasher](https://argon2-cffi.readthedocs.io/en/stable/api.html).
+CSRF/Origin основаны на [рекомендациях OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).

@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: staged-quality
+        name: Staged Ruff, files and secrets
+        entry: uv run --no-sync python -m myapp.hooks
+        language: system
+        require_serial: true
+      - id: fast-tests
+        name: Resource generator and access tests
+        entry: uv run --no-sync python scripts/quick_tests.py
+        language: system
+        require_serial: true

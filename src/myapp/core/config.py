@@ -83,6 +83,12 @@ class IntegrationSettings(BaseModel):
     api_key: SecretStr | None = None
 
 
+class SessionSettings(BaseModel):
+    ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
+    allowed_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+    allow_registration: bool = True
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APP_",
@@ -96,13 +102,14 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     public_url: str = "http://localhost:8000"
-    cors_origins: list[str] = []
+    cors_origins: list[str] = ["http://localhost:3000"]
     request_timeout: float = Field(default=30, gt=0, le=300)
     max_request_bytes: int = Field(default=1048576, ge=1024)
-    build_version: str = "0.1.0"
+    build_version: str = "0.2.0"
     git_sha: str = "unknown"
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    session: SessionSettings = Field(default_factory=SessionSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     email: EmailSettings = Field(default_factory=EmailSettings)
@@ -112,7 +119,22 @@ class Settings(BaseSettings):
     def production_safety(self) -> Self:
         if "*" in self.cors_origins:
             raise ValueError("explicit CORS origins required")
+        if any(
+            urlsplit(origin).scheme not in {"http", "https"}
+            or not urlsplit(origin).netloc
+            or urlsplit(origin).path
+            or urlsplit(origin).query
+            or urlsplit(origin).fragment
+            for origin in self.session.allowed_origins
+        ):
+            raise ValueError("session origins must be exact HTTP(S) origins")
         if self.environment == "production":
+            if self.session.allow_registration:
+                raise ValueError("production registration must be explicitly disabled")
+            if not self.session.allowed_origins or any(
+                not origin.startswith("https://") for origin in self.session.allowed_origins
+            ):
+                raise ValueError("production session origins must be explicit HTTPS origins")
             if self.debug or self.logging.level == "DEBUG":
                 raise ValueError("debug is forbidden in production")
             if not self.public_url.startswith("https://"):
@@ -123,3 +145,7 @@ class Settings(BaseSettings):
             if any(not origin.startswith("https://") for origin in self.cors_origins):
                 raise ValueError("production CORS must use HTTPS")
         return self
+
+
+# CONFIG is the typed settings declaration, not a global instance with hidden import I/O.
+CONFIG = Settings

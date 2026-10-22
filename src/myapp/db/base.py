@@ -17,3 +17,6 @@ class Base(DeclarativeBase):
 def load_models() -> None:
     # Explicit imports are predictable; register future module models here.
     import myapp.audit.models  # noqa: F401
+    import myapp.modules.auth.models  # noqa: F401
+    import myapp.modules.tasks.models  # noqa: F401
+    import myapp.modules.users.models  # noqa: F401

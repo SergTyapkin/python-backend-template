@@ -1,178 +1,269 @@
-# Python Backend Template
+# Declarative FastAPI Backend Template
 
-Чистый modular monolith для коммерческих проектов с отдельным Nuxt 4 frontend
-и внешним SSO. Бизнес-моделей, локальных пользователей и демонстрационного CRUD нет.
+Работающий backend для отдельного Vue 3 Options API / TypeScript frontend.
+Обычные поля описываются один раз в SQLModel; наш небольшой механизм ресурсов создаёт
+Create/Patch/Read, список, стандартные HTTP-операции и OpenAPI. Сам frontend здесь не нужен.
+Фабрика ресурсов — поддерживаемый код этого шаблона, с ограничениями, а не API FastAPI/SQLModel.
 
-Стек: Python 3.14, FastAPI, Pydantic 2/Settings, SQLAlchemy 2 Async,
-PostgreSQL, asyncpg, Alembic, uv, Uvicorn, PyJWT, HTTPX.
-Качество: Ruff, Pyright, pytest, Lefthook, GitHub Actions.
-Точные совместимые версии находятся в `uv.lock`; обновление — `uv lock --upgrade` с ревью CI.
+Стек: Python **3.14**, FastAPI, Pydantic 2/Settings, SQLModel, SQLAlchemy 2 Async,
+asyncpg, PostgreSQL, Alembic, uv, Argon2id, HTTPX. Качество: Ruff, mypy, pytest, pre-commit.
+Совместимые стабильные зависимости закреплены в `uv.lock`; prerelease не используются.
 
-## Быстрый запуск
+## От клонирования до работающего примера
 
-Нужны uv, Git и PostgreSQL 18 (локально либо Docker).
-Команды работают из корня проекта в PowerShell, Bash и других оболочках:
+Требуются Git, uv и PostgreSQL. Команды работают в PowerShell, Linux и macOS.
 
 ```sh
-uv sync --locked
+git clone https://github.com/SergTyapkin/python-backend-template
+cd python-backend-template
+uv sync --frozen
 uv run project-init
-# Необязательно: локальная БД, если порт 5432 свободен
-docker compose up -d postgres
-uv run alembic upgrade head
-uv run uvicorn myapp.main:app --reload --no-proxy-headers
 ```
 
-`project-init` создаёт `.env`, `.local/` и hooks, не перезаписывает `.env`;
-не применяется к production. Если PostgreSQL установлен отдельно, задайте его
-URL в `.env`; Compose использует только локальные development credentials.
-Не требуется frontend или фиктивный пользователь.
+Bootstrap создаёт `.env` и `.local/`, сохраняет существующие значения, устанавливает
+только pre-commit. Сетевые провайдеры, администратор и данные при импорте не создаются.
+Необходимые случайные session/CSRF tokens генерируются при входе; статический app secret не нужен.
+Bootstrap запрещён в production.
 
-Доступны `/health/live`, `/health/ready`, `/version`, `/docs`, `/redoc`, `/openapi.json`.
-Основной namespace `/api/v1` пуст до явного подключения бизнес-модуля.
-Liveness не зависит от БД. Readiness выполняет короткий `SELECT 1`, отдаёт 503 при сбое.
-Миграции проверяются отдельным шагом, readiness не гарантирует актуальность схемы.
+Подключите локальный PostgreSQL: задайте `APP_DATABASE__URL` в `.env`.
+Если Docker установлен и порт свободен, можно использовать только development-БД:
 
-## Настройки
+```sh
+docker compose up -d postgres
+uv run alembic upgrade head
+uv run uvicorn myapp.main:create_app --factory --reload --no-proxy-headers
+```
 
-`Settings` в `core/config.py` типизирован, поддерживает autocomplete и вложенные env:
-`APP_DATABASE__URL`, `APP_AUTH__ISSUER`, `APP_LOGGING__LEVEL`.
-Массивы/словари задаются JSON; полный стартовый набор в `.env.example`.
-`.env` игнорируется Git. В production передавайте env/secrets извне,
-`APP_ENVIRONMENT=production`, HTTPS public URL и отдельные DB credentials.
-Production запрещает debug, wildcard CORS и стандартный пароль БД.
-Email/integrations optional; клиентов и сетевых вызовов по умолчанию нет.
+В другой консоли выполните полноценный сценарий:
+
+```sh
+uv run python scripts/example.py
+```
+
+Он явно создаёт двух обычных пользователей со случайными паролями, входит, создаёт задачу,
+проверяет список владельца и PATCH, получает 404 от лица другого пользователя,
+проверяет отключённый DELETE и выполняет logout. Это локальные данные примера; Task DELETE
+намеренно не опубликован. Пользователей со стандартным паролем нет.
+
+Открыты `/docs`, `/redoc`, `/openapi.json`, `/health/live`, `/health/ready`, `/version`.
+Readiness делает короткий запрос к БД и возвращает 503 при недоступности;
+liveness не зависит от PostgreSQL. Миграции не запускаются API workers.
 
 ## Структура
 
+Сохранено имя Python-пакета `myapp`, чтобы не переносить исправную инфраструктуру:
+
 ```text
 src/myapp/
-  main.py          # application factory и lifespan
-  core/            # settings, DI, errors, security
-  api/             # routers, DTO, pagination, permissions
-  db/              # metadata, engine, session factory
-  auth/            # Principal, JWT verifier, JWKS cache
-  audit/           # infrastructure model, redaction, transaction-safe service
-  observability/   # structured logs, request limits/timeouts
-  modules/         # будущие бизнес-модули
-  integrations/    # будущие внешние клиенты
-  jobs/            # standalone infrastructure jobs
-migrations/        # Alembic, initial audit schema
-tests/unit/        # без внешних сервисов
-tests/integration/ # настоящий PostgreSQL
-scripts/           # вспомогательные инструкции запуска проверок
-docs/              # практические мини-инструкции
+  main.py              application factory / lifespan
+  core/                CONFIG, settings, errors, dependencies, generated env reference
+  db/                  shared metadata, async engine/session
+  resources/           fields, schemas, Resource, router, policy, service
+  modules/users/       закрытая SQLModel User, без универсального CRUD
+  modules/auth/        Argon2, server sessions, cookie auth / CSRF
+  modules/tasks/       одна декларация Task, owner policy, кастомизация create
+  auth/                сохранённый независимый SSO JWT/JWKS verifier
+  audit/               PostgreSQL audit trail в транзакции операции
+  observability/       request ID, limits/timeouts, stdout logs
+  jobs/                явная ручная cleanup-команда аудита, без scheduler
+migrations/            Alembic: audit и 0002 users/sessions/tasks
+contracts/openapi.json generated frontend contract
+tests/unit/            генератор, доступ, ошибки, конфигурация, SSO
+tests/integration/     реальные PostgreSQL / HTTP auth / ownership / rollback
+scripts/               пример, quick tests, benchmark, pinned secret scanner
 ```
 
-## Новая сущность и CRUD
+## Одна декларация и добавление поля
 
-1. Создайте `modules/<name>/models.py`, наследуйте `db.base.Base`.
-2. Добавьте импорт модели в `load_models()` для Alembic.
-3. Создайте Create/Patch/Read DTO от `api.responses.Schema`.
-4. Выполните `uv run project-migration "add resource"`; проверьте migration.
-5. Примените `uv run alembic upgrade head`.
-6. Создайте service, отдельные permissions и объектную проверку доступа.
-7. Создайте router с GET/POST/PATCH/DELETE; используйте `Session` и публичные Read DTO.
-8. Подключите audit в той же транзакции и router в `api/router.py`.
-9. Добавьте тесты валидации, прав, rollback и PostgreSQL queries.
-10. Экспортируйте контракт для frontend.
+Реальный пример находится в `modules/tasks/models.py`:
 
-Не открывайте все ORM-модели автоматически. Подробные короткие примеры —
-[architecture.md](docs/architecture.md).
+```python
+class Task(ResourceModel, table=True):
+    id: UUID = api_field(default_factory=uuid4, primary_key=True, access=FieldAccess.READ_ONLY)
+    title: str = api_field(min_length=1, max_length=200, access=FieldAccess.READ_WRITE)
+    description: str | None = api_field(
+        default=None, max_length=5000, access=FieldAccess.READ_WRITE
+    )
+    owner_id: UUID = api_field(foreign_key="app_user.id", index=True)
+    # created_at объявлен здесь же как READ_ONLY с UTC default_factory.
+```
 
-PATCH: `payload.model_dump(exclude_unset=True)` различает отсутствие поля и `null`.
-Обязательные DB-поля не должны становиться nullable из-за Patch DTO: проверяйте явный null.
-PUT в шаблоне не используется.
+`api_field` — типизированная ограниченная обёртка SQLModel Field. Типы, длины, числовые
+границы, pattern, описание, default/factory, nullable и DB options находятся в этом объявлении.
+Ограничение API не заменяет DB constraint: unique/FK обеспечиваются PostgreSQL и миграцией.
 
-Списки: `{items, total, limit, offset, hasNext}`, limit по умолчанию 20, максимум 100.
-`paginate()` делает COUNT/LIMIT/OFFSET на стороне БД. Фильтры определяются DTO модуля,
-сортировка — whitelist SQLAlchemy columns; добавляйте уникальный tie-breaker.
+| FieldAccess | Create | Patch | Read |
+|---|---|---|---|
+| READ_WRITE | да | да | да |
+| READ_ONLY | нет | нет | да |
+| CREATE_ONLY | да | нет | нет |
+| SERVER_ONLY, по умолчанию | нет | нет | нет |
 
-## Миграции и PostgreSQL
+Доступ не определяется по имени поля. Новое поле закрыто, пока доступ не разрешён явно.
+Пароль относится к отдельному auth-сценарию; password_hash всегда закрыт.
+User DTO тоже выводятся из декларации, password добавляется только к auth request.
+
+Для нового поля измените SQLModel, создайте миграцию и экспортируйте контракт:
 
 ```sh
-uv run project-migration "describe change"
+uv run project-migration "add task field"
+# Обязательно прочитайте полученный файл миграции.
 uv run alembic upgrade head
-uv run alembic check
+uv run export-openapi
 ```
 
-Initial migration создаёт только `audit_log` и индексы.
-Autogenerate не распознаёт переименование надёжно: всегда проверяйте SQL,
-удаления, nullable/default и data migrations. Не запускайте миграции в API lifespan.
-В будущем CI/CD использует отдельный migration job с отдельными DDL credentials.
-Runtime DB user должен иметь минимальные права; не используйте superuser.
+Поле появляется в разрешённых схемах и OpenAPI без ручного редактирования DTO/TypeScript.
+Для новой сущности добавьте импорт модели в `db/base.py:load_models`, создайте policy,
+зарегистрируйте Resource и явно подключите его router в application factory.
 
-## SSO, Nuxt BFF и permissions
+## Правила Create / Patch / Read
 
-Задайте `APP_AUTH__ISSUER`, `APP_AUTH__AUDIENCE` и при необходимости
-`APP_AUTH__JWKS_URL`; иначе используется OIDC discovery. HTTPS обязателен.
-Проверяются подпись, algorithm whitelist, issuer, audience, exp, iat, nbf при наличии,
-обязательные и ожидаемые claims. `expected_claims` позволяет требовать признак access token
-вашего SSO. Нельзя считать произвольный JWT или ID token подходящим access token.
-JWKS кэшируется, unknown kid обновляет ключи с ограничением частоты; outage закрывает доступ.
+Дополнительные правила задаются при регистрации без повторения типов:
 
-Используйте `CurrentPrincipal`, `require_authenticated`, `require_scopes`,
-`require_permissions` и объектные проверки в service. Пример в architecture.md.
-Глобальные роли живут в SSO; локальные permissions/ownership определяет проект.
-Роль сама по себе не разрешает доступ к чужой записи.
-Без настроенного SSO public endpoints работают, protected endpoints закрыты.
+```python
+overrides = {
+    "create": {"title": FieldOverride(constraints={"max_length": 100})},
+    "patch": {"description": FieldOverride(include=False)},
+}
+```
 
-Nuxt BFF хранит browser session, выполняет CSRF-защиту и передаёт Bearer access token.
-API не принимает cookie-auth и не доверяет X-User-ID. Если появится cookie-auth,
-обязательна CSRF-защита API. Trusted proxies задаются явно при запуске Uvicorn.
+Можно исключить поле, усилить ограничения, сделать поле обязательным.
+Чтобы сделать Create/Read поле необязательным, нужен объявленный default/factory.
+Ослабление ограничений, неизвестные поля и противоречащие правила отклоняются.
+Расширение доступа поля требует `allow_access_expansion=True`; используйте его только после ревью.
+Одновременные custom schema и generated overrides одной операции запрещены.
 
-## Audit и логи
+PATCH использует **`exclude_unset=True`**: omission не меняет поле, nullable допускает null,
+non-nullable отвергает null. Read-only/server-only/create-only и неизвестные поля дают 422.
+Пропущенные поля PATCH не запускают default_factory. Для omission используются стабильные
+Pydantic defaults без их валидации; тип T не расширяется до T|None, OpenAPI default убирается.
+Не применяйте обычный `model_dump()` частичной модели к ORM.
 
-`record_audit(session, settings.audit, ...)` пишет короткий JSONB в текущей транзакции.
-Передавайте только allowlist изменённых полей, используйте `exclude` для чувствительных данных.
-Есть глобальное отключение, excluded_entities, actions, рекурсивная redaction и лимит payload.
-Не передавайте полные объекты, бинарные данные, credentials или PII.
-`project-job audit-cleanup` удаляет записи старше retention_days порциями;
-архивирование при необходимости выполняйте перед удалением внешней задачей.
+После объединения PATCH с заблокированной строкой валидируется **полное итоговое состояние**
+через SQLModel.model_validate. Межполевые model validators не копируются в частичную схему.
+Произвольные правила/нормализации реализуйте явно в service.
 
-Production пишет JSON в stdout; development — читаемый текст.
-Логи содержат request ID, method, route template, status, duration, тип исключения.
-Тела, headers, query strings и exception messages автоматически не пишутся.
-Уровень и access logging настраиваются. Место для OpenTelemetry — application factory.
+Можно передать `schemas={"create": MyCreate, "patch": MyPatch, "read": MyRead}`.
+При нестандартных полях адаптируйте service; custom schemas также проверяются на расширение доступа.
 
-## Интеграции и фоновые задачи
+## CRUD, policy и расширение
 
-HTTP clients создавайте в lifespan и передавайте через Depends; ограничивайте timeout,
-ошибки переводите в AppError, тестируйте MockTransport/fake. Пример — architecture.md.
-Для Email, Telegram, Payments и WebSocket пока оставлено только место расширения.
-Короткие некритичные действия допустимы через BackgroundTasks; они не гарантируют доставку.
-Для регулярных задач добавляйте явные команды в jobs/cli.py, запускайте внешним scheduler.
-Cron внутри API запрещён. Для критичных задач позже добавляется durable queue/outbox.
+```python
+tasks = Resource(
+    model=Task,
+    path="/tasks",
+    operations={"list", "retrieve", "create", "patch"},
+    policy=TaskPolicy(),
+    service=TaskService(),
+    sort_fields={"id", "title", "created_at"},
+    filter_fields={"title"},
+)
+```
 
-## Контракт, проверки и hooks
+GET списка/записи и PATCH возвращают 200; POST — 201 и Read DTO; явный DELETE — 204 без тела.
+DELETE у Task не включён и отсутствует в OpenAPI. PUT не добавляется.
+Отключённые операции не регистрируются. Модели сами по себе ничего не публикуют.
+
+Policy обязательна и по умолчанию закрывает доступ. TaskPolicy использует owner predicate
+для списка, total и одной записи, а owner_id устанавливает из проверенного пользователя.
+Недоступная и отсутствующая запись дают одинаковый 404. Роль не заменяет ownership.
+Публичному ресурсу тоже нужны явная policy и principal_dependency.
+
+Service не делает commit: function-scoped Session завершает транзакцию до отправки ответа,
+rollback выполняется при исключении/cancellation. PATCH/DELETE блокируют строку FOR UPDATE.
+Unique(owner_id, title) защищает от гонки; конфликт возвращает 409 без SQL/параметров.
+Audit записывает разрешённые изменения той же транзакцией, с redaction и лимитом payload.
+
+TaskService демонстрирует переопределение **create**: trim title и вызов super().create.
+Другие операции наследуются. `handlers={"retrieve": custom_handler}` заменяет ровно один
+handler; общая authentication/operation policy сохраняется. Объектную scope-проверку внутри
+полностью custom handler должен выполнить сам handler/service.
+Дополнительные маршруты подключаются обычным FastAPI router рядом с ресурсом.
+Для сложной операции используйте обычные Pydantic DTO/service/SQLAlchemy без Resource.
+
+Список: `{items, total, limit, offset}`, default limit=20, max=100.
+COUNT и LIMIT/OFFSET выполняются в БД, сортировка всегда дополнена уникальным id.
+Фильтры — только allowlist с точным равенством и типизированными query-параметрами;
+sort allowlist виден в OpenAPI. Неизвестные query params дают 422. Вложенного CRUD отношений нет.
+
+## Авторизация браузера и конфигурация
+
+`POST /api/v1/auth/register`, `POST /login`, `GET /me`, `POST /logout` находятся под `/api/v1/auth`.
+JSON для register/login: `{username, password}`. Пароли 12..128 символов хешируются Argon2id
+в thread pool. Вход создаёт случайную 256-bit HttpOnly session cookie и возвращает csrf_token.
+В БД хранятся хеши session/CSRF tokens, expires_at и user_id; logout отзывает сессию.
+Cookie Secure во всех окружениях, кроме явно выбранного development; SameSite=Lax, Path=/.
+
+Все изменяющие cookie-запросы требуют точный доверенный Origin и `X-CSRF-Token` из ответа login.
+Register/login защищены строгим Origin и JSON-схемой до выдачи сессии.
+Клиент использует `credentials: 'include'`; Vue и API в development используют **localhost**
+на разных портах, чтобы не смешивать localhost и 127.0.0.1 как разные cookie sites.
+CSRF храните в памяти клиента; после его потери нужен повторный вход. Восстановление токена,
+refresh/session management UI и logout-all пока не реализованы.
+
+`CONFIG` — типизированный alias декларации Settings, экземпляр создаётся factory.
+Настройки сгруппированы: database, session, auth (SSO), audit, logging, email, integrations.
+Env имеет APP_ prefix и __ delimiter, массивы — JSON. `.env.example` генерируется из
+тех же деклараций: `uv run project-env`, актуальность — `uv run project-env --check`.
+Существующий `.env` никогда не перезаписывается. Необходимая настройка при первом запуске — DB URL.
+
+Production требует внешний DB URL с отдельным нестандартным credential, HTTPS public_url,
+HTTPS CORS/session allowed_origins, session.allow_registration=false и выключенный debug.
+Секреты передаются внешними env/secrets; имя cookie/TTL задаются реализацией и session settings.
+Настройки, тела, credentials и query strings не выводятся в технические логи.
+
+Сохранён JWT/JWKS SSO verifier и permission dependencies в `auth/`; Task использует локальную
+сессию. Для внешнего SSO нужны явная identity mapping/policy и principal_dependency,
+автоматического объединения локальных и внешних аккаунтов нет.
+
+## OpenAPI и frontend
 
 ```sh
 uv run export-openapi
-uv run openapi-spec-validator .local/contracts/openapi.json
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest tests/unit -q
-# Задайте TEST_DATABASE_URL на отдельную БД с суффиксом _test!
-uv run pytest tests/integration -q
+uv run export-openapi --check
+uv run openapi-spec-validator contracts/openapi.json
 ```
 
-Интеграционные тесты пересоздают схему audit через downgrade/upgrade Alembic;
-не используйте рабочую БД. Примеры env для PowerShell/Linux — development.md.
-Hooks ставятся project-init. Pre-commit: staged Ruff, config/secrets, релевантный unit smoke.
-Pre-push: только быстрый secret/config check. Основной quality gate — CI:
-Ruff, Pyright, pytest/PostgreSQL, Alembic check, OpenAPI, pip-audit, Bandit, Gitleaks.
-Windows/macOS unit matrix проверяет переносимость. Dependabot обновляет uv и Actions.
+Экспорт детерминирован, использует declaration defaults, не подключается к БД и не читает секреты.
+`contracts/openapi.json` помечен generated и хранится в Git; CI проверяет соответствие коду.
+Передайте его в отдельный frontend repo для генерации TypeScript, клиента и runtime validators.
+Поля JSON — **snake_case**, UUID — strings, datetime — UTC ISO 8601 с timezone.
+Ошибки: `{code, message, details, request_id}`. Auth cookie описана в securitySchemes.
+Контракт содержит ограничения, required/nullability, allowlists, пагинацию и стабильные operationId.
+Примеры инструментов и пределы генерации — [docs/api-conventions.md](docs/api-conventions.md).
 
-AI review выключен. Для opt-in задайте repository variable `ENABLE_AI_REVIEW=true`,
-`AI_REVIEW_MODEL` и отдельный secret `AI_REVIEW_API_KEY`, затем запустите workflow вручную.
-Это платный opt-in: diff отправляется провайдеру; PR-код не исполняется, права read-only,
-результат находится в summary и не заменяет CI. Production secrets не передавать.
+## Проверки, hooks и границы
 
-## Будущая инфраструктура
+```sh
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest tests/unit -q
+# TEST_DATABASE_URL — отдельная PostgreSQL БД с суффиксом _test; данные удаляются!
+uv run pytest tests/integration -q
+uv run pre-commit run --all-files
+uv build --no-sources
+```
 
-Deployment не включён. API, migration и jobs готовы к раздельному запуску,
-env injection, внешнему PostgreSQL, нескольким инстансам и graceful shutdown.
-Состояние API не зависит от локальных файлов. Контейнер, reverse proxy,
-secrets manager, storage, observability, CI/CD и rollback настраиваются отдельно.
-Перед внешним релизом настройте upstream rate/body limits и при необходимости OWASP ZAP.
-Подробности: [API conventions](docs/api-conventions.md), [development](docs/development.md).
+Для генератора/Task изменений hook запускает все unit-тесты генератора и доступа;
+для остальных изменений — небольшой полный unit-suite. Нет сетевых аудитов, integration,
+установки зависимостей и AI calls при commit. Установщик удаляет только старые Lefthook hooks.
+Frozen CI включает Ruff/mypy, unit/PostgreSQL, реальные миграции и drift check, contract/env check,
+package build, pip-audit/Bandit/Gitleaks. Dependabot поддерживает uv.lock и GitHub Actions.
+Замеры: `uv run python scripts/benchmark.py`; условия/результаты — в docs/validation.md.
+
+Механизм ограничен UUID id, плоскими column fields и явной регистрацией.
+Динамические DTO имеют тип `type[BaseModel]`: mypy не выводит их атрибуты автоматически;
+две фабрики аннотаций локально исключают valid-type, остальной код проверяется.
+Для сложного типизированного сценария используйте обычную явную Pydantic-схему.
+Трансформации/validators полной модели не превращаются в произвольные бизнес-операции.
+
+Email verification/reset/OAuth, payments, WebSocket и боты — будущие обычные модули,
+без пустых клиентов и фиктивного успеха. Security-правила расширения — docs/architecture.md.
+Деплой, reverse proxy, backup, мониторинг, durable jobs и scheduler не реализованы.
+Для production-входа отдельно необходим rate limiting/abuse control; ZAP — будущая ручная проверка
+изолированного стенда. AI review — выключенный opt-in manual workflow, не замена CI.
+
+Несовместимые изменения относительно 0.1: локальная auth и Task добавлены; JSON camelCase →
+snake_case, list без hasNext; Pyright/Lefthook заменены mypy/pre-commit; ASGI entry point теперь
+`myapp.main:create_app --factory`; контракт перенесён в contracts/. Audit migration 0001 сохранена.

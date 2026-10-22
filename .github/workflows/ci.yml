@@ -5,9 +5,44 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync mypy
+      - run: uv run --no-sync pytest tests/unit -q
+      - run: uv lock --check
+      - run: uv run --no-sync project-env --check
+      - run: uv run --no-sync export-openapi --check
+      - run: uv build --no-sources
+      - run: uv run --no-sync openapi-spec-validator contracts/openapi.json
+      - run: uv run --no-sync pip-audit
+      - run: uv run --no-sync bandit -r src -q
+      - run: uv run --no-sync project-check --all
+      - name: Secret scan (Gitleaks CLI, no commercial action license)
+        run: uv run --no-sync python scripts/secret_scan.py --history
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openapi
+          path: contracts/openapi.json
+          include-hidden-files: true
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:18
@@ -21,36 +56,19 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       APP_ENVIRONMENT: test
-      APP_DATABASE__URL: postgresql+asyncpg://app:app@localhost:5432/app_test
       TEST_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
-      - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pyright
-      - run: uv run alembic upgrade head
-      - run: uv run alembic check
-      - run: uv run pytest -q
-      - run: uv run export-openapi
-      - run: uv run openapi-spec-validator .local/contracts/openapi.json
-      - run: uv run pip-audit
-      - run: uv run bandit -r src -q
-      - run: uv run project-check --all
-      - name: Secret scan (Gitleaks CLI, no commercial action license)
-        run: uv run python scripts/secret_scan.py --history
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: openapi
-          path: .local/contracts/openapi.json
-          include-hidden-files: true
+      - run: uv sync --frozen
+      # Tests exercise empty-schema downgrade/upgrade, repeat upgrade and metadata drift once.
+      - run: uv run --no-sync pytest tests/integration -q
   portable-unit:
+    timeout-minutes: 15
     strategy:
       matrix:
         os: [windows-latest, macos-latest]
@@ -62,5 +80,5 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
-      - run: uv sync --locked
-      - run: uv run pytest tests/unit -q
+      - run: uv sync --frozen
+      - run: uv run --no-sync pytest tests/unit -q

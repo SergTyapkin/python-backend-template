@@ -12,6 +12,8 @@ from myapp.auth.oidc import TokenVerifier
 from myapp.core.config import Settings
 from myapp.core.exceptions import register_handlers
 from myapp.db.session import Database
+from myapp.modules.auth.router import router as auth_router
+from myapp.modules.tasks.resource import tasks
 from myapp.observability.logging import configure_logging
 from myapp.observability.middleware import RequestMiddleware
 
@@ -47,17 +49,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_handlers(app)
     app.include_router(router)
     app.include_router(api_router)
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(tasks.router, prefix="/api/v1")
     app.add_middleware(RequestMiddleware, settings=config)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token"],
         expose_headers=["X-Request-ID"],
     )
     # OpenTelemetry instrumentation belongs here; exporter is deployment-owned.
     return app
-
-
-app = create_app()

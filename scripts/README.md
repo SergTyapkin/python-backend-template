@@ -1,9 +1,13 @@
 # Команды
 
-Кроссплатформенные реализации установлены как Python entry points в `src/myapp/cli.py`:
-`uv run project-init`, `uv run project-migration "message"`, `uv run export-openapi`.
-Standalone jobs: `uv run project-job audit-cleanup`. Bash/WSL не нужны.
-
-`uv run python scripts/secret_scan.py --history` запускает Gitleaks по истории Git.
-`--staged` проверяет только index. Первый запуск скачивает закреплённую версию CLI
-в игнорируемую `.local/tools/` и проверяет SHA256 архива. CI использует `--history`.
+- `uv run project-init`: идемпотентный bootstrap и установка единственного pre-commit hook.
+- `uv run project-env [--check]`: generated .env.example из Pydantic settings.
+- `uv run export-openapi [--check]`: generated contracts/openapi.json без runtime env/DB.
+- `uv run project-migration "message"`: Alembic autogenerate с обязательным ручным ревью.
+- `uv run python scripts/example.py`: полный сценарий локального API, без seed при импорте.
+- `uv run python scripts/benchmark.py --help`: Ruff/mypy/pytest/pre-commit, health latency и pool checks.
+- `uv run python scripts/secret_scan.py --staged`: pinned Gitleaks CLI, checksum-verified download
+  в игнорируемую .local/tools. В CI используется --history, без коммерческой action-лицензии.
+- `scripts/quick_tests.py` выбирает все test_resources*.py + access tests для resource изменений,
+  для остальных изменений запускает небольшой unit-suite; вызывается pre-commit, без сети/БД.
+- `uv run project-job audit-cleanup`: явная standalone cleanup-команда; встроенного scheduler нет.

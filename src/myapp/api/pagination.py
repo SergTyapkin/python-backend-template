@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field
 from sqlalchemy import Select, SQLColumnExpression, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,6 @@ class Page[T](Schema):
     limit: int
     offset: int
 
-    @computed_field
     @property
     def has_next(self) -> bool:
         return self.offset + len(self.items) < self.total

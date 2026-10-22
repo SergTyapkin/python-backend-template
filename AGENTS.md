@@ -1,21 +1,29 @@
 # Правила проекта
 
-- Это чистый инфраструктурный шаблон. Бизнес-примеры допустимы только в документации и тестах.
-- FastAPI routers отвечают за HTTP; services — за операции и объектные права; DTO — Pydantic 2.
-- Python/SQL используют snake_case, публичный JSON — camelCase через `Schema`.
-- Добавляйте модули явно в `api/router.py`, ORM imports — в `db/base.py:load_models`.
-- Используйте SQLAlchemy 2 AsyncSession, отдельную на запрос. SQL только параметризованный.
-- Используйте `Session` dependency с function scope: commit должен завершиться до отправки ответа.
-- Не вызывайте commit в audit/services. Аудит и изменение данных принадлежат одной транзакции.
-- Схема БД меняется только Alembic migrations. Ревью autogenerate обязательно.
-- PATCH использует exclude_unset=True; PUT не добавлять. Явный null проверяется DTO/сервисом.
-- Публичные Read DTO не должны включать секреты; ORM напрямую не возвращать.
-- Bearer access tokens проверяются через доверенные issuer/audience/JWKS; локального login нет.
-- Отсутствие SSO никогда не разрешает доступ. Проверяйте permissions и ownership отдельно.
-- Зависимости ресурсов создаются lifespan, передаются через Depends; shared session запрещена.
-- Внешние HTTP clients переиспользуются и имеют timeout. Не блокируйте event loop.
-- Не логируйте тела, токены, cookies, query strings и персональные данные.
-- Подключайте audit явно: allowlist изменённых несекретных полей, bounded JSONB.
-- Добавляйте unit и PostgreSQL integration tests; SQLite не подменяет PostgreSQL.
-- После изменений: Ruff, Pyright, pytest, Alembic check, экспорт и валидация OpenAPI.
-- Не добавляйте deployment или внешние системы без необходимости. Не выполняйте git push без запроса.
+- Приоритет — текущий пользовательский запрос. SQLModel ResourceModel — источник полей обычного CRUD.
+- Не дублируйте поля в ORM/Create/Patch/Read/TypeScript. OpenAPI и .env.example генерируются командами.
+- api_field закрыт по умолчанию. READ_WRITE/READ_ONLY/CREATE_ONLY/SERVER_ONLY задаются явно.
+- Используйте только публичные Pydantic/SQLModel/SQLAlchemy API; не меняйте исходные model_fields.
+- Механизм ресурсов ограничен плоскими UUID-моделями; не стройте новый ORM/framework или query builder.
+- JSON/Python/SQL — snake_case. UUID строки; datetime UTC с timezone.
+- FastAPI router — HTTP; policy — авторизация и SQL scope; service — операции и бизнес-правила.
+- Регистрация ресурсов и операций явная, policy обязательна. Public policy также должна быть явной.
+- Scope применяется к list/total/retrieve/patch/delete. Серверные поля устанавливаются policy/service.
+- PATCH — exclude_unset=True; omitted отличается от null, non-nullable null запрещён. PUT не добавлять.
+- Полную модель валидируйте после объединения PATCH с текущим состоянием; не копируйте model validators в Patch.
+- Read DTO состоит только из разрешённых полей. Не dump всех ORM columns и не допускайте lazy loading.
+- SQLAlchemy AsyncSession отдельная на запрос, function scope: commit до ответа, rollback при ошибке/отмене.
+- Не вызывайте commit в services/audit. Бизнес-изменение и audit принадлежат одной транзакции.
+- Схема меняется только Alembic; импорты моделей явные в db/base.py:load_models. Ревью autogenerate обязательно.
+- SQL параметризован, ORM по умолчанию, индексы/оптимизации только по рабочим измерениям.
+- Локальная auth: Argon2id, opaque server sessions, hash token в БД, expiry/revocation.
+- Cookie HttpOnly/Secure (исключение только development), обязательны точный Origin и CSRF для изменений.
+- User/auth не публикуются универсальным CRUD. SSO verifier сохранён отдельно, mapping identity явный.
+- Не логируйте тела, tokens, cookies, credentials, query strings, PII. JSON stdout в production.
+- Клиенты/engine создаются и закрываются lifespan; таймауты обязательны, blocking I/O вне event loop.
+- После изменений: uv lock check, Ruff, mypy, unit/PostgreSQL tests, Alembic check, env/OpenAPI check, build.
+- Только pre-commit: staged snapshot, быстрые генератор/access tests, file/secrets. Без сети/полной БД в hooks.
+- Контракт contracts/openapi.json generated: не редактируйте вручную. Frontend живёт отдельно.
+- Не добавляйте deployment, scheduler, внешние сервисы и пустые интеграции без необходимости.
+- Task — явный минимальный пример, DELETE выключен; остальные бизнес-примеры только в docs/tests.
+- Не выполняйте git push и не создавайте внешние ресурсы без запроса.
